@@ -1,69 +1,45 @@
 # ALFRED 🦇
 
-Assistente pessoal por voz, que fala e entende **inglês**, movido pelo Claude (Anthropic).
-Diga **"Alfred"** + seu pedido e ele responde falando e executa ações no seu computador.
+A voice-powered personal assistant powered by Claude (Anthropic), with the manners of a British butler.
+Say **"Alfred"** followed by your request and he answers out loud and takes actions on your computer.
 
-## O que ele faz
-> O Alfred escuta e responde em inglês, com voz britânica quando o seu sistema tiver uma. Exemplo: *"Alfred, open YouTube"*.
+## What he can do
+- Chat about anything and remember the conversation
+- Open websites ("Alfred, open YouTube")
+- Search Google or YouTube ("Alfred, search for lasagna recipes on YouTube")
+- Open any installed app, including Microsoft Store apps ("Alfred, open Spotify")
+- Save, read and delete notes ("Alfred, take a note that I have a test on Friday")
+- Tell the date and time
+- Text mode, if you don't have a microphone
 
-- Conversa sobre qualquer assunto e lembra do contexto da conversa
-- Abre sites ("Alfred, open YouTube")
-- Pesquisa no Google ou YouTube ("Alfred, search for lasagna recipes on YouTube")
-- Abre programas ("Alfred, open the calculator")
-- Salva, lê e apaga notas/lembretes ("Alfred, take a note that I have a test on Friday")
-- Sabe a data e a hora
-- Modo texto, se você não tiver microfone
+## Quick start (Windows)
+1. Install **Python 3.13** (the microphone library does not support 3.14 on Windows yet). With the Python install manager, run `py install 3.13` in cmd.
+2. Download this project (green **Code** button > **Download ZIP**) and extract it.
+3. Create an API key at https://console.anthropic.com (**API Keys**) and add credits under **Billing**.
+4. Double-click **`install.bat`** and paste your key when asked.
+5. Double-click **`run.bat`** and say *"Alfred, what time is it?"*
 
-## Passo a passo
-
-### 1. Instale o Python
-Baixe o Python 3.10+ em https://python.org (no Windows, marque **"Add Python to PATH"**).
-
-### 2. Baixe o projeto
+## Manual setup (Mac/Linux)
 ```bash
 git clone https://github.com/ArthurMT120207/alfred.git
 cd alfred
-```
-
-### 3. Crie um ambiente virtual e instale as dependências
-```bash
-python -m venv venv
-# Windows:
-venv\Scripts\activate
-# Mac/Linux:
+python3 -m venv venv
 source venv/bin/activate
-
 pip install -r requirements.txt
+cp .env.example .env   # then put your key in .env
+python alfred.py          # voice mode
+python alfred.py --text   # text mode
 ```
-> **Erro no PyAudio?**
-> Windows: `pip install pipwin && pipwin install pyaudio`
-> Mac: `brew install portaudio` e depois `pip install pyaudio`
-> Linux: `sudo apt install portaudio19-dev python3-pyaudio`
+> **PyAudio error?** Mac: `brew install portaudio`. Linux: `sudo apt install portaudio19-dev python3-pyaudio`.
 
-### 4. Pegue sua chave da API
-1. Acesse https://console.anthropic.com e crie uma conta
-2. Vá em **API Keys** e crie uma chave
-3. Adicione créditos em **Billing** (o uso é pago por consumo, normalmente centavos por conversa)
+⚠️ Never upload your `.env` file to GitHub (the `.gitignore` already prevents this).
 
-### 5. Configure
-Copie `.env.example` para `.env` e cole sua chave:
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-⚠️ Nunca suba o `.env` para o GitHub (o `.gitignore` já impede isso).
+## Customization
+In `.env` you can change the model, the wake word and how Alfred addresses you.
+To add new actions, add an entry to `TOOLS` and handle it in `run_tool()` in `alfred.py`.
 
-### 6. Rode
-```bash
-python alfred.py          # modo voz
-python alfred.py --texto  # modo texto
-```
-
-## Personalização
-No `.env` você pode mudar o modelo, a palavra de ativação e como o Alfred te chama.
-Para adicionar novas ações, crie uma entrada em `FERRAMENTAS` e trate ela em `executar_ferramenta()` no `alfred.py`.
-
-## Ideias para próximas versões
-- Interface gráfica estilo Batcomputador
-- Voz mais realista (ElevenLabs, OpenAI TTS)
-- Controle de música, volume e mensagens
-- Integração com agenda e e-mail
+## Ideas for future versions
+- Batcomputer-style graphical interface
+- More realistic voice (ElevenLabs, OpenAI TTS)
+- Music, volume and messaging control
+- Calendar and email integration
