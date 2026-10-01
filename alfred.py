@@ -1,11 +1,12 @@
 """
-ALFRED - Assistente pessoal por voz usando Claude (Anthropic).
+ALFRED - Voice-powered personal assistant using Claude (Anthropic).
 
-Modos:
-    python alfred.py           -> modo voz (diga "Alfred" + seu pedido)
-    python alfred.py --texto   -> modo texto (digita no terminal)
+Modes:
+    python alfred.py          -> voice mode (say "Alfred" + your request)
+    python alfred.py --text   -> text mode (type in the terminal)
 """
 
+import difflib
 import json
 import os
 import platform
@@ -22,335 +23,408 @@ import anthropic
 load_dotenv()
 
 # ----------------------------------------------------------------------------
-# Configuração
+# Settings
 # ----------------------------------------------------------------------------
-MODELO = os.getenv("ALFRED_MODELO", "claude-sonnet-5-5")
-PALAVRA_ATIVACAO = os.getenv("ALFRED_PALAVRA", "alfred").lower()
-# Jeitos comuns que o reconhecimento de voz "escuta" a palavra Alfred
-VARIACOES_ATIVACAO = [PALAVRA_ATIVACAO, "alfredo", "alfred's", "all fred", "al fred",
+MODEL = os.getenv("ALFRED_MODEL", "claude-sonnet-5-5")
+WAKE_WORD = os.getenv("ALFRED_WAKE_WORD", "alfred").lower()
+# Common ways speech recognition "hears" the word Alfred
+WAKE_WORD_VARIANTS = [WAKE_WORD, "alfredo", "alfred's", "all fred", "al fred",
                       "alford", "alfret", "elfred", "hey alfred"]
-NOME_USUARIO = os.getenv("ALFRED_USUARIO", "sir")
-ARQUIVO_NOTAS = Path(__file__).parent / "notas.json"
-MAX_HISTORICO = 20  # mensagens mantidas na memória da conversa
+USER_TITLE = os.getenv("ALFRED_USER_TITLE", "sir")
+NOTES_FILE = Path(__file__).parent / "notes.json"
+MAX_HISTORY = 20  # messages kept in conversation memory
 
 SYSTEM_PROMPT = f"""You are ALFRED, an intelligent, polite and efficient personal assistant,
 inspired by Batman's loyal butler, with a refined British manner.
-You ALWAYS speak and answer in English, even if the user speaks another language.
-Address the user as "{NOME_USUARIO}".
+You ALWAYS speak and answer in English.
+Address the user as "{USER_TITLE}".
 Your answers will be SPOKEN out loud, so:
 - Be brief and direct (1 to 3 sentences, unless asked for detail).
 - Do not use markdown, lists, emojis or symbols.
 Use the available tools when the request involves actions on the computer,
-the time, notes or web searches. Current date and time: {{agora}}."""
+the time, notes or web searches. Current date and time: {{now}}."""
 
 # ----------------------------------------------------------------------------
-# Ferramentas (ações que o Alfred pode executar)
+# Tools (actions Alfred can perform)
 # ----------------------------------------------------------------------------
-FERRAMENTAS = [
+TOOLS = [
     {
-        "name": "abrir_site",
-        "description": "Abre um site no navegador padrão.",
+        "name": "open_website",
+        "description": "Opens a website in the default browser.",
         "input_schema": {
             "type": "object",
-            "properties": {"url": {"type": "string", "description": "Endereço do site, ex: youtube.com"}},
+            "properties": {"url": {"type": "string", "description": "Website address, e.g. youtube.com"}},
             "required": ["url"],
         },
     },
     {
-        "name": "pesquisar_web",
-        "description": "Pesquisa algo no Google ou no YouTube e abre o resultado no navegador.",
+        "name": "web_search",
+        "description": "Searches Google or YouTube and opens the results in the browser.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "termo": {"type": "string"},
-                "onde": {"type": "string", "enum": ["google", "youtube"]},
+                "query": {"type": "string"},
+                "where": {"type": "string", "enum": ["google", "youtube"]},
             },
-            "required": ["termo"],
+            "required": ["query"],
         },
     },
     {
-        "name": "abrir_programa",
-        "description": "Abre um programa instalado no computador (ex: calculadora, bloco de notas, spotify).",
+        "name": "open_app",
+        "description": ("Opens any app installed on the computer (e.g. spotify, discord, calculator, "
+                        "notepad, chrome, whatsapp, steam, settings). Pass the app name as the user said it. "
+                        "If it fails, tell the user the app was not found."),
         "input_schema": {
             "type": "object",
-            "properties": {"nome": {"type": "string"}},
-            "required": ["nome"],
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
         },
     },
     {
-        "name": "salvar_nota",
-        "description": "Salva uma nota ou lembrete para o usuário.",
+        "name": "save_note",
+        "description": "Saves a note or reminder for the user.",
         "input_schema": {
             "type": "object",
-            "properties": {"texto": {"type": "string"}},
-            "required": ["texto"],
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
         },
     },
     {
-        "name": "ler_notas",
-        "description": "Lê todas as notas e lembretes salvos.",
+        "name": "read_notes",
+        "description": "Reads all saved notes and reminders.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
-        "name": "apagar_notas",
-        "description": "Apaga todas as notas salvas. Só use se o usuário pedir claramente.",
+        "name": "delete_notes",
+        "description": "Deletes all saved notes. Only use if the user clearly asks for it.",
         "input_schema": {"type": "object", "properties": {}},
     },
 ]
 
-# Atalhos de programas comuns por sistema operacional
-PROGRAMAS = {
+# Shortcuts for common apps, per operating system
+APP_SHORTCUTS = {
     "Windows": {
-        "calculadora": "calc",
-        "bloco de notas": "notepad",
-        "explorador": "explorer",
+        "calculator": "calc",
+        "notepad": "notepad",
+        "file explorer": "explorer",
+        "explorer": "explorer",
+        "files": "explorer",
         "paint": "mspaint",
-        "spotify": "spotify",
-        "vscode": "code",
-        "chrome": "chrome",
+        "settings": "ms-settings:",
+        "task manager": "taskmgr",
+        "command prompt": "cmd",
+        "terminal": "wt",
     },
     "Darwin": {
-        "calculadora": "Calculator",
-        "bloco de notas": "TextEdit",
-        "explorador": "Finder",
+        "calculator": "Calculator",
+        "notepad": "TextEdit",
+        "file explorer": "Finder",
+        "files": "Finder",
         "spotify": "Spotify",
         "vscode": "Visual Studio Code",
         "chrome": "Google Chrome",
     },
     "Linux": {
-        "calculadora": "gnome-calculator",
-        "bloco de notas": "gedit",
-        "explorador": "nautilus",
+        "calculator": "gnome-calculator",
+        "notepad": "gedit",
+        "file explorer": "nautilus",
+        "files": "nautilus",
         "spotify": "spotify",
         "vscode": "code",
         "chrome": "google-chrome",
     },
 }
 
+# Nicknames -> real app names (Windows search)
+APP_NICKNAMES = {"vs code": "visual studio code", "vscode": "visual studio code"}
 
-def _carregar_notas() -> list:
+
+# ----------------------------------------------------------------------------
+# Open any installed app (Windows)
+# ----------------------------------------------------------------------------
+_APPS_CACHE = None
+
+
+def _windows_apps() -> dict:
+    """Lists Start Menu apps (including Microsoft Store apps). {name: AppID}"""
+    global _APPS_CACHE
+    if _APPS_CACHE is None:
+        _APPS_CACHE = {}
+        try:
+            output = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-StartApps | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).stdout
+            data = json.loads(output) if output.strip() else []
+            if isinstance(data, dict):
+                data = [data]
+            for app in data:
+                _APPS_CACHE[app["Name"].lower()] = app["AppID"]
+        except Exception as e:  # noqa: BLE001
+            print(f"  [warning] could not list installed apps: {e}")
+    return _APPS_CACHE
+
+
+def _find_app(request: str, names: list) -> str | None:
+    """Finds the app name that best matches the request."""
+    request = request.lower().strip()
+    for test in (
+        lambda n: n == request,
+        lambda n: n.startswith(request),
+        lambda n: request in n,
+        lambda n: all(word in n for word in request.split()),
+    ):
+        matches = sorted((n for n in names if test(n)), key=len)
+        if matches:
+            return matches[0]
+    close = difflib.get_close_matches(request, names, n=1, cutoff=0.6)
+    return close[0] if close else None
+
+
+def open_windows_app(request: str) -> str:
+    request = request.lower().strip()
+    shortcut = APP_SHORTCUTS["Windows"].get(request)
+    if shortcut:
+        os.startfile(shortcut)
+        return f"Opened {request}."
+
+    apps = _windows_apps()
+    name = _find_app(APP_NICKNAMES.get(request, request), list(apps))
+    if name:
+        subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{apps[name]}"])
+        return f"Opened {name}."
+
+    return f"App '{request}' not found on this computer."
+
+
+# ----------------------------------------------------------------------------
+# Notes
+# ----------------------------------------------------------------------------
+def _load_notes() -> list:
     try:
-        return json.loads(ARQUIVO_NOTAS.read_text(encoding="utf-8"))
+        return json.loads(NOTES_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
 
-def executar_ferramenta(nome: str, args: dict) -> str:
-    """Executa uma ferramenta e devolve o resultado em texto para o Claude."""
+def run_tool(name: str, args: dict) -> str:
+    """Runs a tool and returns the result as text for Claude."""
     try:
-        if nome == "abrir_site":
+        if name == "open_website":
             url = args["url"]
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             webbrowser.open(url)
-            return f"Site {url} aberto."
+            return f"Opened {url}."
 
-        if nome == "pesquisar_web":
-            termo = quote_plus(args["termo"])
-            if args.get("onde") == "youtube":
-                url = f"https://www.youtube.com/results?search_query={termo}"
+        if name == "web_search":
+            query = quote_plus(args["query"])
+            if args.get("where") == "youtube":
+                url = f"https://www.youtube.com/results?search_query={query}"
             else:
-                url = f"https://www.google.com/search?q={termo}"
+                url = f"https://www.google.com/search?q={query}"
             webbrowser.open(url)
-            return f"Pesquisa aberta: {url}"
+            return f"Search opened: {url}"
 
-        if nome == "abrir_programa":
-            sistema = platform.system()
-            pedido = args["nome"].lower().strip()
-            comando = PROGRAMAS.get(sistema, {}).get(pedido, pedido)
-            if sistema == "Windows":
-                os.startfile(comando) if os.path.exists(comando) else subprocess.Popen(
-                    f'start "" "{comando}"', shell=True)
-            elif sistema == "Darwin":
-                subprocess.Popen(["open", "-a", comando])
+        if name == "open_app":
+            system = platform.system()
+            request = args["name"].lower().strip()
+            if system == "Windows":
+                return open_windows_app(request)
+            command = APP_SHORTCUTS.get(system, {}).get(request, request)
+            if system == "Darwin":
+                subprocess.Popen(["open", "-a", command])
             else:
-                subprocess.Popen([comando])
-            return f"Programa '{pedido}' aberto."
+                subprocess.Popen([command])
+            return f"Opened {request}."
 
-        if nome == "salvar_nota":
-            notas = _carregar_notas()
-            notas.append({"texto": args["texto"], "data": datetime.now().strftime("%d/%m/%Y %H:%M")})
-            ARQUIVO_NOTAS.write_text(json.dumps(notas, ensure_ascii=False, indent=2), encoding="utf-8")
-            return "Nota salva."
+        if name == "save_note":
+            notes = _load_notes()
+            notes.append({"text": args["text"], "date": datetime.now().strftime("%Y-%m-%d %H:%M")})
+            NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+            return "Note saved."
 
-        if nome == "ler_notas":
-            notas = _carregar_notas()
-            if not notas:
-                return "Nenhuma nota salva."
-            return "\n".join(f"{n['data']}: {n['texto']}" for n in notas)
+        if name == "read_notes":
+            notes = _load_notes()
+            if not notes:
+                return "No notes saved."
+            return "\n".join(f"{n['date']}: {n['text']}" for n in notes)
 
-        if nome == "apagar_notas":
-            ARQUIVO_NOTAS.write_text("[]", encoding="utf-8")
-            return "Todas as notas foram apagadas."
+        if name == "delete_notes":
+            NOTES_FILE.write_text("[]", encoding="utf-8")
+            return "All notes deleted."
 
-        return f"Ferramenta desconhecida: {nome}"
+        return f"Unknown tool: {name}"
     except Exception as e:  # noqa: BLE001
-        return f"Erro ao executar {nome}: {e}"
+        return f"Error running {name}: {e}"
 
 
 # ----------------------------------------------------------------------------
-# Cérebro (Claude)
+# Brain (Claude)
 # ----------------------------------------------------------------------------
-class Cerebro:
+class Brain:
     def __init__(self):
         if not os.getenv("ANTHROPIC_API_KEY"):
-            sys.exit("ERRO: defina ANTHROPIC_API_KEY no arquivo .env (veja o README).")
-        self.cliente = anthropic.Anthropic()
-        self.historico: list = []
+            sys.exit("ERROR: set ANTHROPIC_API_KEY in the .env file (see README).")
+        self.client = anthropic.Anthropic()
+        self.history: list = []
 
-    def pensar(self, pedido: str) -> str:
-        self.historico.append({"role": "user", "content": pedido})
-        system = SYSTEM_PROMPT.replace("{agora}", datetime.now().strftime("%A, %d/%m/%Y %H:%M"))
+    def think(self, request: str) -> str:
+        self.history.append({"role": "user", "content": request})
+        system = SYSTEM_PROMPT.replace("{now}", datetime.now().strftime("%A, %B %d, %Y %I:%M %p"))
 
         while True:
-            resposta = self.cliente.messages.create(
-                model=MODELO,
+            response = self.client.messages.create(
+                model=MODEL,
                 max_tokens=1024,
                 system=system,
-                tools=FERRAMENTAS,
-                messages=self.historico,
+                tools=TOOLS,
+                messages=self.history,
             )
-            self.historico.append({"role": "assistant", "content": resposta.content})
+            self.history.append({"role": "assistant", "content": response.content})
 
-            if resposta.stop_reason != "tool_use":
+            if response.stop_reason != "tool_use":
                 break
 
-            resultados = []
-            for bloco in resposta.content:
-                if bloco.type == "tool_use":
-                    print(f"  [ação] {bloco.name} {bloco.input}")
-                    resultados.append({
+            results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    print(f"  [action] {block.name} {block.input}")
+                    results.append({
                         "type": "tool_result",
-                        "tool_use_id": bloco.id,
-                        "content": executar_ferramenta(bloco.name, bloco.input),
+                        "tool_use_id": block.id,
+                        "content": run_tool(block.name, block.input),
                     })
-            self.historico.append({"role": "user", "content": resultados})
+            self.history.append({"role": "user", "content": results})
 
-        self._podar_historico()
-        return "".join(b.text for b in resposta.content if b.type == "text").strip()
+        self._trim_history()
+        return "".join(b.text for b in response.content if b.type == "text").strip()
 
-    def _podar_historico(self):
-        # Mantém a conversa curta, sempre começando numa mensagem de texto do usuário
-        while len(self.historico) > MAX_HISTORICO:
-            self.historico.pop(0)
-            while self.historico and not (
-                self.historico[0]["role"] == "user" and isinstance(self.historico[0]["content"], str)
+    def _trim_history(self):
+        # Keeps the conversation short, always starting on a user text message
+        while len(self.history) > MAX_HISTORY:
+            self.history.pop(0)
+            while self.history and not (
+                self.history[0]["role"] == "user" and isinstance(self.history[0]["content"], str)
             ):
-                self.historico.pop(0)
+                self.history.pop(0)
 
 
 # ----------------------------------------------------------------------------
-# Voz (fala e escuta)
+# Voice (speaking and listening)
 # ----------------------------------------------------------------------------
-class Voz:
+class Voice:
     def __init__(self):
         import pyttsx3
-        self.motor = pyttsx3.init()
-        self.motor.setProperty("rate", 185)
-        for v in self.motor.getProperty("voices"):
-            info = f"{v.id} {v.name} {getattr(v, 'languages', '')}".lower()
-            # Prefere uma voz em inglês (britânica, se houver)
-            if "en_gb" in info or "en-gb" in info or "united kingdom" in info or "george" in info or "hazel" in info:
-                self.motor.setProperty("voice", v.id)
-                break
-            if "english" in info or "en_us" in info or "en-us" in info or "david" in info or "zira" in info:
-                self.motor.setProperty("voice", v.id)
-                break
+        self.engine = pyttsx3.init()
+        self.engine.setProperty("rate", 185)
+        voices = self.engine.getProperty("voices")
 
-    def falar(self, texto: str):
-        print(f"ALFRED: {texto}")
-        self.motor.say(texto)
-        self.motor.runAndWait()
+        def info(v):
+            return f"{v.id} {v.name} {getattr(v, 'languages', '')}".lower()
+
+        british = [v for v in voices if any(k in info(v) for k in ("en_gb", "en-gb", "united kingdom", "george", "hazel"))]
+        english = [v for v in voices if any(k in info(v) for k in ("english", "en_us", "en-us", "david", "zira"))]
+        chosen = (british or english or [None])[0]
+        if chosen:
+            self.engine.setProperty("voice", chosen.id)
+
+    def say(self, text: str):
+        print(f"ALFRED: {text}")
+        self.engine.say(text)
+        self.engine.runAndWait()
 
 
-class Ouvido:
+class Ears:
     def __init__(self):
         import speech_recognition as sr
         self.sr = sr
-        self.reconhecedor = sr.Recognizer()
-        self.reconhecedor.pause_threshold = 0.8
-        self.microfone = sr.Microphone()
-        with self.microfone as fonte:
-            print("Calibrando o microfone (fique em silêncio)...")
-            self.reconhecedor.adjust_for_ambient_noise(fonte, duration=1.5)
+        self.recognizer = sr.Recognizer()
+        self.recognizer.pause_threshold = 0.8
+        self.microphone = sr.Microphone()
+        with self.microphone as source:
+            print("Calibrating microphone (please stay quiet)...")
+            self.recognizer.adjust_for_ambient_noise(source, duration=1.5)
 
-    def ouvir(self) -> str:
-        with self.microfone as fonte:
+    def listen(self) -> str:
+        with self.microphone as source:
             try:
-                audio = self.reconhecedor.listen(fonte, timeout=None, phrase_time_limit=12)
+                audio = self.recognizer.listen(source, timeout=None, phrase_time_limit=12)
             except self.sr.WaitTimeoutError:
                 return ""
         try:
-            return self.reconhecedor.recognize_google(audio, language="en-US")
+            return self.recognizer.recognize_google(audio, language="en-US")
         except (self.sr.UnknownValueError, self.sr.RequestError):
             return ""
 
 
 # ----------------------------------------------------------------------------
-# Loops principais
+# Main loops
 # ----------------------------------------------------------------------------
-SAIR = {"exit", "quit", "goodbye", "shutdown", "sair"}
+EXIT_WORDS = {"exit", "quit", "goodbye", "shutdown"}
 
 
-def modo_texto(cerebro: Cerebro):
-    print(f"ALFRED (modo texto). Digite '{'/'.join(sorted(SAIR))}' para encerrar.\n")
+def text_mode(brain: Brain):
+    print(f"ALFRED (text mode). Type '{'/'.join(sorted(EXIT_WORDS))}' to quit.\n")
     while True:
         try:
-            pedido = input("Você: ").strip()
+            request = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if not pedido:
+        if not request:
             continue
-        if pedido.lower() in SAIR:
-            print(f"ALFRED: Goodbye, {NOME_USUARIO}.")
+        if request.lower() in EXIT_WORDS:
+            print(f"ALFRED: Goodbye, {USER_TITLE}.")
             break
-        print(f"ALFRED: {cerebro.pensar(pedido)}\n")
+        print(f"ALFRED: {brain.think(request)}\n")
 
 
-def modo_voz(cerebro: Cerebro):
-    voz = Voz()
-    ouvido = Ouvido()
-    voz.falar(f"Good evening, {NOME_USUARIO}. At your service.")
-    print(f"Diga '{PALAVRA_ATIVACAO}' seguido do seu pedido. Ctrl+C para sair.\n")
+def voice_mode(brain: Brain):
+    voice = Voice()
+    ears = Ears()
+    voice.say(f"Good evening, {USER_TITLE}. At your service.")
+    print(f"Say '{WAKE_WORD.title()}' followed by your request. Press Ctrl+C to quit.\n")
 
     while True:
-        frase = ouvido.ouvir().lower()
-        if not frase:
+        phrase = ears.listen().lower()
+        if not phrase:
             continue
-        print(f"(ouvi: {frase})")
-        gatilho = next((v for v in VARIACOES_ATIVACAO if v in frase), None)
-        if not gatilho:
-            print(f"  (dica: comece a frase com '{PALAVRA_ATIVACAO.title()}')")
+        print(f"(heard: {phrase})")
+        trigger = next((v for v in WAKE_WORD_VARIANTS if v in phrase), None)
+        if not trigger:
+            print(f"  (tip: start your sentence with '{WAKE_WORD.title()}')")
             continue
 
-        pedido = frase.split(gatilho, 1)[1].strip(" ,.")
-        if not pedido:
-            voz.falar("Yes, sir?")
-            pedido = ouvido.ouvir()
-            if not pedido:
+        request = phrase.split(trigger, 1)[1].strip(" ,.")
+        if not request:
+            voice.say(f"Yes, {USER_TITLE}?")
+            request = ears.listen()
+            if not request:
                 continue
-        if any(p in pedido.lower().split() for p in SAIR):
-            voz.falar(f"Shutting down. Goodbye, {NOME_USUARIO}.")
+        if any(word in request.lower().split() for word in EXIT_WORDS):
+            voice.say(f"Shutting down. Goodbye, {USER_TITLE}.")
             break
         try:
-            voz.falar(cerebro.pensar(pedido))
+            voice.say(brain.think(request))
         except anthropic.APIError as e:
-            voz.falar("I am afraid I could not reach my servers, sir.")
-            print(f"  [erro] {e}")
+            voice.say(f"I am afraid I could not reach my servers, {USER_TITLE}.")
+            print(f"  [error] {e}")
 
 
 def main():
-    cerebro = Cerebro()
-    if "--texto" in sys.argv:
-        modo_texto(cerebro)
+    brain = Brain()
+    if "--text" in sys.argv:
+        text_mode(brain)
         return
     try:
-        modo_voz(cerebro)
+        voice_mode(brain)
     except KeyboardInterrupt:
-        print("\nALFRED desligado.")
+        print("\nALFRED shut down.")
     except Exception as e:  # noqa: BLE001
-        print(f"Não consegui iniciar o modo voz ({e}). Entrando no modo texto.\n")
-        modo_texto(cerebro)
+        print(f"Could not start voice mode ({e}). Switching to text mode.\n")
+        text_mode(brain)
 
 
 if __name__ == "__main__":
