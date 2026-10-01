@@ -26,6 +26,9 @@ load_dotenv()
 # ----------------------------------------------------------------------------
 MODELO = os.getenv("ALFRED_MODELO", "claude-sonnet-5-5")
 PALAVRA_ATIVACAO = os.getenv("ALFRED_PALAVRA", "alfred").lower()
+# Jeitos comuns que o reconhecimento de voz "escuta" a palavra Alfred
+VARIACOES_ATIVACAO = [PALAVRA_ATIVACAO, "alfredo", "alfred's", "all fred", "al fred",
+                      "alford", "alfret", "elfred", "hey alfred"]
 NOME_USUARIO = os.getenv("ALFRED_USUARIO", "sir")
 ARQUIVO_NOTAS = Path(__file__).parent / "notas.json"
 MAX_HISTORICO = 20  # mensagens mantidas na memória da conversa
@@ -315,10 +318,12 @@ def modo_voz(cerebro: Cerebro):
         if not frase:
             continue
         print(f"(ouvi: {frase})")
-        if PALAVRA_ATIVACAO not in frase:
+        gatilho = next((v for v in VARIACOES_ATIVACAO if v in frase), None)
+        if not gatilho:
+            print(f"  (dica: comece a frase com '{PALAVRA_ATIVACAO.title()}')")
             continue
 
-        pedido = frase.split(PALAVRA_ATIVACAO, 1)[1].strip(" ,.")
+        pedido = frase.split(gatilho, 1)[1].strip(" ,.")
         if not pedido:
             voz.falar("Yes, sir?")
             pedido = ouvido.ouvir()
